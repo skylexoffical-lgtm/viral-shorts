@@ -7,7 +7,8 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
@@ -75,7 +76,82 @@ def health():
 
 
 # ============================================================
-# DOWNLOAD VIDEO - GARANTİ HD ÇÖZÜM
+# COBALT API İLE YOUTUBE HD İNDİRME
+# ============================================================
+def download_with_cobalt(url, out_file):
+    """Cobalt API ile YouTube video indir — HD garanti"""
+    try:
+        # Cobalt API'ye istek at
+        api_url = "https://api.cobalt.tools/api/json"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "url": url,
+            "isNoTTWatermark": True,
+            "isTTFullAudio": True,
+            "youtubeHLS": False
+        }
+
+        response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            if "url" in data:
+                # Direkt indirme linki var
+                video_url = data["url"]
+                r = requests.get(video_url, stream=True, timeout=120)
+                r.raise_for_status()
+
+                with open(out_file, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                return True, "Cobalt API başarılı"
+            elif "status" in data and data["status"] == "error":
+                return False, f"Cobalt hata: {data.get('text', 'Bilinmeyen hata')}"
+
+        return False, f"Cobalt API hata: {response.status_code}"
+
+    except Exception as e:
+        return False, f"Cobalt hata: {str(e)}"
+
+
+# ============================================================
+# YT-DLP İLE KICK/OTHER İNDİRME
+# ============================================================
+def download_with_ytdlp(url, out_file):
+    """yt-dlp ile Kick ve diğer platformlar"""
+    try:
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "--merge-output-format", "mp4",
+            "--ffmpeg-location", shutil.which("ffmpeg") or "/usr/bin/ffmpeg",
+            "--no-check-certificates",
+            "--geo-bypass",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--no-warnings",
+            "-o", str(out_file),
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+        if result.returncode == 0 and out_file.exists() and out_file.stat().st_size > 50000:
+            return True, "yt-dlp başarılı"
+        else:
+            return False, f"yt-dlp hata: {result.stderr[:200]}"
+
+    except Exception as e:
+        return False, f"yt-dlp hata: {str(e)}"
+
+
+# ============================================================
+# ANA İNDİRME FONKSİYONU
 # ============================================================
 @app.route('/api/download', methods=['POST'])
 def download_video():
@@ -96,171 +172,65 @@ def download_video():
     }
 
     def task():
-        log_lines = []
-
         def log(msg):
             print(f"[JOB {job_id}] {msg}")
-            log_lines.append(msg)
 
         try:
-            # 1. ÖNCE yt-dlp'yi GÜNCELLE
-            log("yt-dlp güncelleniyor...")
-            jobs[job_id]["message"] = "yt-dlp güncelleniyor..."
+            is_youtube = any(x in url.lower() for x in ['youtube.com', 'youtu.be', 'youtube'])
+            is_kick = 'kick.com' in url.lower()
 
-            update_result = subprocess.run(
-                ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
-                capture_output=True, text=True, timeout=90
-            )
-            log(f"yt-dlp update: {update_result.returncode}")
-
-            # 2. FORMAT LİSTESİNİ AL (hangi formatlar var)
-            log("Formatlar kontrol ediliyor...")
-            jobs[job_id]["message"] = "Video formatları kontrol ediliyor..."
-            jobs[job_id]["progress"] = 10
-
-            list_cmd = [
-                "yt-dlp",
-                "--no-playlist",
-                "--list-formats",
-                "--no-check-certificates",
-                "--geo-bypass",
-                "--geo-bypass-country", "NL",
-                url
-            ]
-
-            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=30)
-            format_output = list_result.stdout + list_result.stderr
-            log(f"Format listesi exit: {list_result.returncode}")
-
-            # Format çıktısından HD formatları bul
-            available_formats = []
-            for line in format_output.split('\n'):
-                if 'mp4' in line.lower() and any(x in line for x in ['1080', '720', '480', '360']):
-                    available_formats.append(line.strip())
-
-            log(f"Bulunan formatlar: {len(available_formats)}")
-            for f in available_formats[:5]:
-                log(f"  Format: {f}")
-
-            # 3. İNDİRME STRATEJİLERİ (en iyi kaliteden başlayarak)
-            strategies = []
-
-            # Strateji A: Tek stream HD (merge gerektirmez) - EN GARANTİ
-            strategies.append({
-                "name": "Tek Stream HD (720p)",
-                "cmd": [
-                    "yt-dlp",
-                    "--no-playlist",
-                    "-f", "22/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "--geo-bypass-country", "NL",
-                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                    "--add-header", "Accept-Language:nl-NL,nl;q=0.9",
-                    "--no-warnings",
-                    "--no-call-home",
-                    "-o", str(out_file),
-                    url
-                ]
-            })
-
-            # Strateji B: 1080p merge (ffmpeg ile)
-            strategies.append({
-                "name": "Merge HD (1080p)",
-                "cmd": [
-                    "yt-dlp",
-                    "--no-playlist",
-                    "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-                    "--merge-output-format", "mp4",
-                    "--ffmpeg-location", shutil.which("ffmpeg") or "/usr/bin/ffmpeg",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "--geo-bypass-country", "NL",
-                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "--no-warnings",
-                    "-o", str(out_file),
-                    url
-                ]
-            })
-
-            # Strateji C: Düşük kalite fallback
-            strategies.append({
-                "name": "Fallback (480p)",
-                "cmd": [
-                    "yt-dlp",
-                    "--no-playlist",
-                    "-f", "best[height<=480][ext=mp4]/best[height<=480]/worst[ext=mp4]/worst",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "--geo-bypass-country", "NL",
-                    "-o", str(out_file),
-                    url
-                ]
-            })
-
-            # 4. STRATEJİLERİ DENE
             success = False
-            last_error = ""
+            method_used = ""
 
-            for idx, strategy in enumerate(strategies):
-                if success:
-                    break
+            # YOUTUBE: Önce Cobalt API dene
+            if is_youtube:
+                jobs[job_id]["message"] = "YouTube HD indiriliyor (Cobalt API)..."
+                jobs[job_id]["progress"] = 15
+                log("YouTube tespit edildi, Cobalt API deneniyor...")
 
-                jobs[job_id]["message"] = f"{strategy['name']} deneniyor..."
-                jobs[job_id]["progress"] = 20 + (idx * 20)
-                log(f"Strateji {idx+1}: {strategy['name']}")
+                success, msg = download_with_cobalt(url, out_file)
+                method_used = "Cobalt API"
+                log(f"Cobalt sonuç: {success} - {msg}")
 
-                p = subprocess.Popen(
-                    strategy["cmd"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True
+                # Cobalt başarısız olursa yt-dlp dene
+                if not success:
+                    jobs[job_id]["message"] = "Cobalt başarısız, yt-dlp deneniyor..."
+                    jobs[job_id]["progress"] = 30
+                    log("Cobalt başarısız, yt-dlp deneniyor...")
+
+                    # yt-dlp'yi güncelle
+                    subprocess.run(
+                        ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
+                        capture_output=True, timeout=60
+                    )
+
+                    success, msg = download_with_ytdlp(url, out_file)
+                    method_used = "yt-dlp fallback"
+                    log(f"yt-dlp sonuç: {success} - {msg}")
+
+            # KICK / DİĞER: Doğrudan yt-dlp
+            else:
+                jobs[job_id]["message"] = "Video indiriliyor (yt-dlp)..."
+                jobs[job_id]["progress"] = 15
+                log(f"Kick/diğer tespit edildi: {url[:50]}...")
+
+                # yt-dlp'yi güncelle
+                subprocess.run(
+                    ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
+                    capture_output=True, timeout=60
                 )
 
-                output_buffer = []
-                for line in p.stdout:
-                    output_buffer.append(line)
-                    # İlerleme güncelle
-                    if "download" in line.lower():
-                        jobs[job_id]["message"] = f"{strategy['name']}: İndiriliyor..."
-                        jobs[job_id]["progress"] = min(jobs[job_id]["progress"] + 3, 90)
+                success, msg = download_with_ytdlp(url, out_file)
+                method_used = "yt-dlp"
+                log(f"yt-dlp sonuç: {success} - {msg}")
 
-                p.wait()
-                exit_code = p.returncode
-
-                # Dosya kontrolü
-                file_exists = out_file.exists()
-                file_size = out_file.stat().st_size if file_exists else 0
-
-                log(f"  Exit code: {exit_code}, Dosya var: {file_exists}, Boyut: {file_size}")
-
-                if exit_code == 0 and file_exists and file_size > 50000:  # 50KB'dan büyük
-                    success = True
-                    log(f"  ✓ BAŞARILI!")
-                    break
-                else:
-                    last_error_lines = [l for l in output_buffer if "error" in l.lower() or "ERROR" in l or "403" in l or "Forbidden" in l]
-                    last_error = f"{strategy['name']} başarısız (exit:{exit_code}, size:{file_size})"
-                    if last_error_lines:
-                        last_error += f" | Hata: {last_error_lines[-1][:100]}"
-                    log(f"  ✗ BAŞARISIZ: {last_error}")
-
-                    # Temizle
-                    if file_exists:
-                        try:
-                            out_file.unlink()
-                        except:
-                            pass
-
+            # HÂLÂ BAŞARISIZ
             if not success:
-                # Detaylı hata mesajı
-                error_detail = f"Tüm stratejiler başarısız.\nSon hata: {last_error}\n\nFormatlar:\n"
-                error_detail += "\n".join(available_formats[:10]) if available_formats else "Format bulunamadı"
-                raise Exception(error_detail)
+                raise Exception(f"Tüm indirme yöntemleri başarısız.\nSon denenen: {method_used}\nHata: {msg}")
 
-            # 5. VIDEO BİLGİLERİNİ AL
+            # VIDEO BİLGİLERİNİ AL
             jobs[job_id]["message"] = "Video bilgileri alınıyor..."
-            jobs[job_id]["progress"] = 95
+            jobs[job_id]["progress"] = 90
 
             ffprobe_cmd = [
                 "ffprobe", "-v", "error",
@@ -285,7 +255,6 @@ def download_video():
             except:
                 bitrate_str = "?"
 
-            # Kalite etiketi
             quality_label = "SD"
             if height >= 1080:
                 quality_label = "FHD 1080p"
@@ -294,23 +263,27 @@ def download_video():
             elif height >= 480:
                 quality_label = "480p"
 
+            file_size_mb = round(out_file.stat().st_size / (1024*1024), 1)
+
             jobs[job_id] = {
                 "status": "completed",
                 "progress": 100,
-                "message": f"✓ {quality_label} {bitrate_str}",
+                "message": f"✓ {quality_label} ({file_size_mb}MB) — {method_used}",
                 "video_path": str(out_file),
                 "duration": duration,
                 "width": width,
                 "height": height,
                 "bitrate": bitrate_str,
-                "quality": quality_label
+                "quality": quality_label,
+                "method": method_used,
+                "size_mb": file_size_mb
             }
 
-            log(f"İndirme tamamlandı: {width}x{height} {bitrate_str}")
+            log(f"✓ TAMAMLANDI: {width}x{height} {quality_label} {file_size_mb}MB ({method_used})")
 
         except Exception as e:
             error_msg = str(e)
-            log(f"HATA: {error_msg[:200]}")
+            log(f"✗ HATA: {error_msg[:300]}")
             jobs[job_id] = {
                 "status": "error",
                 "progress": 0,
@@ -429,6 +402,9 @@ def analyze():
     return jsonify({"job_id": job_id})
 
 
+# ============================================================
+# FFMPEG SHORTS ÜRETİMİ — DÜŞÜK RAM MODU (SIGKILL ÇÖZÜMÜ)
+# ============================================================
 @app.route('/api/generate', methods=['POST'])
 def generate():
     data = request.get_json()
@@ -460,21 +436,36 @@ def generate():
             duration = c.get("duration", 10)
 
             try:
+                # DÜŞÜK RAM MODU: 
+                # - threads 1 (daha az RAM)
+                # - preset ultrafast (hızlı, az RAM)
+                # - bufsize limit (RAM sınırla)
+                # - 720p max (daha az RAM)
+
                 cmd = [
                     "ffmpeg", "-y",
                     "-ss", str(timestamp),
                     "-t", str(duration),
                     "-i", video,
-                    "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+                    # Düşük RAM ayarları
+                    "-threads", "1",
+                    "-vf", "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black",
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "18",
+                    "-crf", "20",
                     "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
+                    # RAM limiti
+                    "-maxrate", "2M",
+                    "-bufsize", "1M",
                     str(out_path)
                 ]
 
-                subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+                result = subprocess.run(cmd, capture_output=True, timeout=180)
+
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore')[:300]
+                    raise Exception(f"FFmpeg hata: {error_msg}")
 
                 file_size = out_path.stat().st_size
                 size_mb = round(file_size / (1024 * 1024), 2)
@@ -488,11 +479,18 @@ def generate():
                 jobs[job_id]["progress"] = int((i + 1) / len(clips) * 100)
                 jobs[job_id]["message"] = f"{i+1}/{len(clips)} shorts üretildi"
 
+            except subprocess.TimeoutExpired:
+                jobs[job_id] = {
+                    "status": "error",
+                    "progress": 0,
+                    "message": f"Klip {i+1} zaman aşımı (çok uzun sürdü)"
+                }
+                return
             except Exception as e:
                 jobs[job_id] = {
                     "status": "error",
                     "progress": 0,
-                    "message": f"Klip {i+1} hatası: {str(e)}"
+                    "message": f"Klip {i+1} hatası: {str(e)[:200]}"
                 }
                 return
 
