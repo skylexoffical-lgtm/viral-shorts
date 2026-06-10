@@ -12,9 +12,6 @@ from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 
-# -------------------------
-# PATH SETUP
-# -------------------------
 BASE_DIR = Path(__file__).parent.resolve()
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 OUTPUT_FOLDER = BASE_DIR / "outputs"
@@ -23,34 +20,25 @@ TEMP_FOLDER = BASE_DIR / "temp"
 for f in [UPLOAD_FOLDER, OUTPUT_FOLDER, TEMP_FOLDER]:
     f.mkdir(exist_ok=True)
 
-# -------------------------
-# FLASK INIT
-# -------------------------
 app = Flask(__name__)
 CORS(app)
 
 jobs = {}
 
-# -------------------------
-# TEMİZLİK FONKSİYONU (1 saatlik otomatik silme)
-# -------------------------
+# TEMİZLİK
 def cleanup_old_files():
-    """1 saatten eski dosyaları otomatik sil"""
     now = time.time()
     max_age = 3600
-
     for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, TEMP_FOLDER]:
         if not folder.exists():
             continue
         for file_path in folder.iterdir():
             if file_path.is_file():
                 try:
-                    file_age = now - file_path.stat().st_mtime
-                    if file_age > max_age:
+                    if now - file_path.stat().st_mtime > max_age:
                         file_path.unlink()
-                        print(f"[CLEANUP] Silindi: {file_path}")
-                except Exception as e:
-                    print(f"[CLEANUP] Hata: {e}")
+                except:
+                    pass
 
 def start_cleanup_scheduler():
     while True:
@@ -60,29 +48,15 @@ def start_cleanup_scheduler():
 threading.Thread(target=start_cleanup_scheduler, daemon=True).start()
 
 
-# -------------------------
-# FRONTEND
-# -------------------------
 @app.route('/')
 def index():
     return send_file(BASE_DIR / "index.html")
 
 
-# -------------------------
-# HEALTH CHECK
-# -------------------------
 @app.route('/api/health')
 def health():
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     ytdlp_ok = shutil.which("yt-dlp") is not None
-
-    ffmpeg_version = "unknown"
-    if ffmpeg_ok:
-        try:
-            result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-            ffmpeg_version = result.stdout.split('\n')[0]
-        except:
-            pass
 
     ytdlp_version = "unknown"
     if ytdlp_ok:
@@ -95,15 +69,14 @@ def health():
     return jsonify({
         "status": "ok",
         "ffmpeg_installed": ffmpeg_ok,
-        "ffmpeg_version": ffmpeg_version,
         "yt_dlp_installed": ytdlp_ok,
         "yt_dlp_version": ytdlp_version
     })
 
 
-# -------------------------
-# DOWNLOAD VIDEO (HD KALİTE + HOLLANDA)
-# -------------------------
+# ============================================================
+# DOWNLOAD VIDEO - GARANTİ HD ÇÖZÜM
+# ============================================================
 @app.route('/api/download', methods=['POST'])
 def download_video():
     data = request.get_json()
@@ -117,83 +90,125 @@ def download_video():
 
     jobs[job_id] = {
         "status": "downloading",
-        "progress": 0,
-        "message": "İndirme başlatılıyor...",
+        "progress": 5,
+        "message": "Başlatılıyor...",
         "video_path": str(out_file)
     }
 
     def task():
-        try:
-            # yt-dlp'yi güncelle
-            subprocess.run(
-                ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
-                capture_output=True, text=True, timeout=60
-            )
+        log_lines = []
 
-            # HD KALİTE: bestvideo+bestaudio veya en yüksek kalite
-            # HOLLANDA: --geo-bypass-country NL
-            strategies = [
-                {
-                    "cmd": [
-                        "yt-dlp",
-                        "--no-playlist",
-                        "--extractor-args", "youtube:player_client=android",
-                        # HD KALİTE: video+audio merge et, en yüksek kalite
-                        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best",
-                        "--merge-output-format", "mp4",
-                        "--no-check-certificates",
-                        "--geo-bypass",
-                        "--geo-bypass-country", "NL",  # HOLLANDA
-                        "--user-agent", "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
-                        "--add-header", "Accept-Language:nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
-                        # Kalite ayarları
-                        "--no-warnings",
-                        "--no-call-home",
-                        "-o", str(out_file),
-                        url
-                    ],
-                    "name": "Android HD (NL)"
-                },
-                {
-                    "cmd": [
-                        "yt-dlp",
-                        "--no-playlist",
-                        "--extractor-args", "youtube:player_client=ios",
-                        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-                        "--merge-output-format", "mp4",
-                        "--no-check-certificates",
-                        "--geo-bypass",
-                        "--geo-bypass-country", "NL",
-                        "-o", str(out_file),
-                        url
-                    ],
-                    "name": "iOS HD (NL)"
-                },
-                {
-                    "cmd": [
-                        "yt-dlp",
-                        "--no-playlist",
-                        "-f", "best[ext=mp4]/best",
-                        "--merge-output-format", "mp4",
-                        "--no-check-certificates",
-                        "--geo-bypass",
-                        "--geo-bypass-country", "NL",
-                        "-o", str(out_file),
-                        url
-                    ],
-                    "name": "Fallback (NL)"
-                }
+        def log(msg):
+            print(f"[JOB {job_id}] {msg}")
+            log_lines.append(msg)
+
+        try:
+            # 1. ÖNCE yt-dlp'yi GÜNCELLE
+            log("yt-dlp güncelleniyor...")
+            jobs[job_id]["message"] = "yt-dlp güncelleniyor..."
+
+            update_result = subprocess.run(
+                ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
+                capture_output=True, text=True, timeout=90
+            )
+            log(f"yt-dlp update: {update_result.returncode}")
+
+            # 2. FORMAT LİSTESİNİ AL (hangi formatlar var)
+            log("Formatlar kontrol ediliyor...")
+            jobs[job_id]["message"] = "Video formatları kontrol ediliyor..."
+            jobs[job_id]["progress"] = 10
+
+            list_cmd = [
+                "yt-dlp",
+                "--no-playlist",
+                "--list-formats",
+                "--no-check-certificates",
+                "--geo-bypass",
+                "--geo-bypass-country", "NL",
+                url
             ]
 
+            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=30)
+            format_output = list_result.stdout + list_result.stderr
+            log(f"Format listesi exit: {list_result.returncode}")
+
+            # Format çıktısından HD formatları bul
+            available_formats = []
+            for line in format_output.split('\n'):
+                if 'mp4' in line.lower() and any(x in line for x in ['1080', '720', '480', '360']):
+                    available_formats.append(line.strip())
+
+            log(f"Bulunan formatlar: {len(available_formats)}")
+            for f in available_formats[:5]:
+                log(f"  Format: {f}")
+
+            # 3. İNDİRME STRATEJİLERİ (en iyi kaliteden başlayarak)
+            strategies = []
+
+            # Strateji A: Tek stream HD (merge gerektirmez) - EN GARANTİ
+            strategies.append({
+                "name": "Tek Stream HD (720p)",
+                "cmd": [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "-f", "22/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "--geo-bypass-country", "NL",
+                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    "--add-header", "Accept-Language:nl-NL,nl;q=0.9",
+                    "--no-warnings",
+                    "--no-call-home",
+                    "-o", str(out_file),
+                    url
+                ]
+            })
+
+            # Strateji B: 1080p merge (ffmpeg ile)
+            strategies.append({
+                "name": "Merge HD (1080p)",
+                "cmd": [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+                    "--merge-output-format", "mp4",
+                    "--ffmpeg-location", shutil.which("ffmpeg") or "/usr/bin/ffmpeg",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "--geo-bypass-country", "NL",
+                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "--no-warnings",
+                    "-o", str(out_file),
+                    url
+                ]
+            })
+
+            # Strateji C: Düşük kalite fallback
+            strategies.append({
+                "name": "Fallback (480p)",
+                "cmd": [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "-f", "best[height<=480][ext=mp4]/best[height<=480]/worst[ext=mp4]/worst",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "--geo-bypass-country", "NL",
+                    "-o", str(out_file),
+                    url
+                ]
+            })
+
+            # 4. STRATEJİLERİ DENE
             success = False
             last_error = ""
 
-            for strategy in strategies:
+            for idx, strategy in enumerate(strategies):
                 if success:
                     break
 
-                jobs[job_id]["message"] = f"Deneniyor: {strategy['name']}..."
-                print(f"[DOWNLOAD] {strategy['name']} deneniyor...")
+                jobs[job_id]["message"] = f"{strategy['name']} deneniyor..."
+                jobs[job_id]["progress"] = 20 + (idx * 20)
+                log(f"Strateji {idx+1}: {strategy['name']}")
 
                 p = subprocess.Popen(
                     strategy["cmd"],
@@ -202,30 +217,51 @@ def download_video():
                     text=True
                 )
 
-                output_lines = []
+                output_buffer = []
                 for line in p.stdout:
-                    output_lines.append(line)
-                    jobs[job_id]["progress"] = min(jobs[job_id]["progress"] + 5, 90)
-                    if "Downloading" in line or "download" in line.lower():
+                    output_buffer.append(line)
+                    # İlerleme güncelle
+                    if "download" in line.lower():
                         jobs[job_id]["message"] = f"{strategy['name']}: İndiriliyor..."
+                        jobs[job_id]["progress"] = min(jobs[job_id]["progress"] + 3, 90)
 
                 p.wait()
+                exit_code = p.returncode
 
-                if p.returncode == 0 and out_file.exists() and out_file.stat().st_size > 10000:
+                # Dosya kontrolü
+                file_exists = out_file.exists()
+                file_size = out_file.stat().st_size if file_exists else 0
+
+                log(f"  Exit code: {exit_code}, Dosya var: {file_exists}, Boyut: {file_size}")
+
+                if exit_code == 0 and file_exists and file_size > 50000:  # 50KB'dan büyük
                     success = True
-                    print(f"[DOWNLOAD] {strategy['name']} BAŞARILI!")
+                    log(f"  ✓ BAŞARILI!")
                     break
                 else:
-                    last_error = f"{strategy['name']} başarısız (exit: {p.returncode})"
-                    print(f"[DOWNLOAD] {last_error}")
-                    print(f"[DOWNLOAD] Output: {''.join(output_lines[-10:])}")
-                    if out_file.exists():
-                        out_file.unlink()
+                    last_error_lines = [l for l in output_buffer if "error" in l.lower() or "ERROR" in l or "403" in l or "Forbidden" in l]
+                    last_error = f"{strategy['name']} başarısız (exit:{exit_code}, size:{file_size})"
+                    if last_error_lines:
+                        last_error += f" | Hata: {last_error_lines[-1][:100]}"
+                    log(f"  ✗ BAŞARISIZ: {last_error}")
+
+                    # Temizle
+                    if file_exists:
+                        try:
+                            out_file.unlink()
+                        except:
+                            pass
 
             if not success:
-                raise Exception(f"Tüm stratejiler başarısız. Son hata: {last_error}")
+                # Detaylı hata mesajı
+                error_detail = f"Tüm stratejiler başarısız.\nSon hata: {last_error}\n\nFormatlar:\n"
+                error_detail += "\n".join(available_formats[:10]) if available_formats else "Format bulunamadı"
+                raise Exception(error_detail)
 
-            # Video bilgilerini al
+            # 5. VIDEO BİLGİLERİNİ AL
+            jobs[job_id]["message"] = "Video bilgileri alınıyor..."
+            jobs[job_id]["progress"] = 95
+
             ffprobe_cmd = [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
@@ -241,51 +277,60 @@ def download_video():
             duration = float(stream.get("duration", 60))
             width = stream.get("width", 1920)
             height = stream.get("height", 1080)
-            bitrate = stream.get("bit_rate", "?")
+            bitrate = stream.get("bit_rate", "0")
 
-            # Bitrate'i okunabilir yap
-            if bitrate != "?":
+            try:
                 bitrate_mb = round(int(bitrate) / 1000000, 2)
                 bitrate_str = f"{bitrate_mb} Mbps"
-            else:
+            except:
                 bitrate_str = "?"
+
+            # Kalite etiketi
+            quality_label = "SD"
+            if height >= 1080:
+                quality_label = "FHD 1080p"
+            elif height >= 720:
+                quality_label = "HD 720p"
+            elif height >= 480:
+                quality_label = "480p"
 
             jobs[job_id] = {
                 "status": "completed",
                 "progress": 100,
-                "message": f"İndirme tamamlandı — {height}p {bitrate_str}",
+                "message": f"✓ {quality_label} {bitrate_str}",
                 "video_path": str(out_file),
                 "duration": duration,
                 "width": width,
                 "height": height,
-                "bitrate": bitrate_str
+                "bitrate": bitrate_str,
+                "quality": quality_label
             }
 
+            log(f"İndirme tamamlandı: {width}x{height} {bitrate_str}")
+
         except Exception as e:
+            error_msg = str(e)
+            log(f"HATA: {error_msg[:200]}")
             jobs[job_id] = {
                 "status": "error",
                 "progress": 0,
-                "message": str(e)
+                "message": error_msg[:500]
             }
             if out_file.exists():
-                out_file.unlink()
+                try:
+                    out_file.unlink()
+                except:
+                    pass
 
     threading.Thread(target=task, daemon=True).start()
     return jsonify({"job_id": job_id})
 
 
-# -------------------------
-# JOB STATUS
-# -------------------------
 @app.route('/api/job/<job_id>')
 def job_status(job_id):
-    job = jobs.get(job_id, {})
-    return jsonify(job)
+    return jsonify(jobs.get(job_id, {}))
 
 
-# -------------------------
-# PREVIEW FRAME
-# -------------------------
 @app.route('/api/preview', methods=['POST'])
 def preview():
     data = request.get_json()
@@ -308,9 +353,7 @@ def preview():
             str(img_path)
         ], check=True, capture_output=True, timeout=30)
 
-        return jsonify({
-            "image": f"/temp/{img_name}"
-        })
+        return jsonify({"image": f"/temp/{img_name}"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -320,9 +363,6 @@ def serve_temp(file):
     return send_from_directory(TEMP_FOLDER, file)
 
 
-# -------------------------
-# ANALYZE (VIRAL MOMENTS)
-# -------------------------
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
     data = request.get_json()
@@ -389,9 +429,6 @@ def analyze():
     return jsonify({"job_id": job_id})
 
 
-# -------------------------
-# GENERATE SHORTS
-# -------------------------
 @app.route('/api/generate', methods=['POST'])
 def generate():
     data = request.get_json()
@@ -431,7 +468,7 @@ def generate():
                     "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "18",  # Daha iyi kalite (düşük CRF = daha iyi)
+                    "-crf", "18",
                     "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
                     str(out_path)
@@ -470,9 +507,6 @@ def generate():
     return jsonify({"job_id": job_id})
 
 
-# -------------------------
-# DOWNLOAD FILE
-# -------------------------
 @app.route('/download/<file>')
 def download(file):
     file_path = OUTPUT_FOLDER / file
@@ -481,18 +515,12 @@ def download(file):
     return send_file(file_path, as_attachment=True)
 
 
-# -------------------------
-# MANUAL CLEANUP
-# -------------------------
 @app.route('/api/cleanup', methods=['POST'])
 def manual_cleanup():
     cleanup_old_files()
     return jsonify({"message": "Temizlik tamamlandı"})
 
 
-# -------------------------
-# START SERVER
-# -------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
