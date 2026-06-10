@@ -6,7 +6,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp PIP ile kur (her deploy'da güncel)
 RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
@@ -18,4 +17,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD gunicorn app:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 4 --timeout 300
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 4 --timeout 300"]
