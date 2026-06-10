@@ -43,8 +43,6 @@
             position: sticky;
             top: 0;
             z-index: 100;
-            flex-wrap: wrap;
-            gap: 1rem;
         }
 
         .logo { display: flex; align-items: center; gap: 0.75rem; }
@@ -247,7 +245,7 @@
             transition: border-color 0.2s;
         }
         .webcam-preview.active { border-color: var(--accent-primary); }
-        .webcam-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .webcam-preview img { width: 100%; height: 100%; object-fit: cover; }
         .webcam-placeholder {
             width: 100%; height: 100%;
             display: flex; flex-direction: column;
@@ -284,7 +282,7 @@
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             grid-template-rows: repeat(2, 1fr);
-            height: 30%;
+            height: 30%; /* KAMERALAR %30 YER KAPLAR */
             gap: 0;
         }
         .layout-webcam {
@@ -381,8 +379,6 @@
             .header { padding: 1rem; flex-direction: column; gap: 1rem; }
             .webcam-strip { grid-template-columns: repeat(2, 1fr); }
             .clip-grid { grid-template-columns: 1fr; }
-            .steps-nav { gap: 0.5rem; }
-            .step-item { padding: 0.5rem 1rem; font-size: 0.8rem; }
         }
     </style>
 </head>
@@ -395,7 +391,7 @@
     </div>
     <div class="status-bar">
         <div class="status-item">
-            <span class="status-dot" id="status-dot"></span>
+            <span class="status-dot"></span>
             <span id="server-status">Bağlantı kontrol ediliyor...</span>
         </div>
     </div>
@@ -412,7 +408,6 @@
 
     <div id="alert-container"></div>
 
-    <!-- STEP 1: DOWNLOAD -->
     <div class="section active" id="step-1">
         <div class="card">
             <div class="card-header">
@@ -443,7 +438,6 @@
         </div>
     </div>
 
-    <!-- STEP 2: ROI -->
     <div class="section" id="step-2">
         <div class="card">
             <div class="card-header">
@@ -459,7 +453,7 @@
             </div>
 
             <div class="roi-container" id="roi-container">
-                <img id="preview-image" class="roi-canvas" style="display:none;" draggable="false" alt="Preview">
+                <img id="preview-image" class="roi-canvas" style="display:none;" draggable="false">
                 <div class="roi-overlay" id="roi-overlay"></div>
                 <div class="roi-crosshair-h" id="crosshair-h"></div>
                 <div class="roi-crosshair-v" id="crosshair-v"></div>
@@ -469,16 +463,16 @@
                 <div style="text-align:center; margin-bottom:1rem; color:var(--text-secondary); font-size:0.875rem;">
                     📱 Çıktı Layout'u — Gerçek 9:16 (1080×1920)
                 </div>
-                <div class="layout-9-16" id="layout-preview-box">
-                    <div class="layout-webcams" id="layout-webcams">
+                <div class="layout-9-16">
+                    <div class="layout-webcams">
                         <div class="layout-webcam">KAM 1</div>
                         <div class="layout-webcam">KAM 2</div>
                         <div class="layout-webcam">KAM 3</div>
                         <div class="layout-webcam">KAM 4</div>
                     </div>
-                    <div class="layout-game" id="layout-game">🎮 OYUN (Geniş Alan)</div>
+                    <div class="layout-game">🎮 OYUN (Geniş Alan)</div>
                 </div>
-                <div style="text-align:center; margin-top:0.75rem; font-size:0.75rem; color:var(--text-muted);" id="layout-desc">
+                <div style="text-align:center; margin-top:0.75rem; font-size:0.75rem; color:var(--text-muted);">
                     Üst: 2×2 webcam grid (540×288 her hücre) &nbsp;|&nbsp; Alt: Oyun alanı (1080×1344)
                 </div>
             </div>
@@ -503,14 +497,13 @@
                 </div>
             </div>
 
-            <div style="display:flex; gap:1rem; margin-top:1rem; flex-wrap:wrap;">
+            <div style="display:flex; gap:1rem; margin-top:1rem;">
                 <button class="btn btn-secondary" onclick="resetROIs()">🔄 Sıfırla</button>
                 <button class="btn btn-primary" onclick="goToStep(3)">✓ Devam Et</button>
             </div>
         </div>
     </div>
 
-    <!-- STEP 3: ANALYZE -->
     <div class="section" id="step-3">
         <div class="card">
             <div class="card-header">
@@ -534,7 +527,7 @@
             </div>
 
             <div id="clips-container" style="display:none;">
-                <div style="margin:1.5rem 0 1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+                <div style="margin:1.5rem 0 1rem; display:flex; justify-content:space-between; align-items:center;">
                     <h3 style="font-size:1.125rem;">Tespit Edilen Viral Anlar</h3>
                     <button class="btn btn-secondary" onclick="selectAllClips()">Tümünü Seç</button>
                 </div>
@@ -546,7 +539,6 @@
         </div>
     </div>
 
-    <!-- STEP 4: GENERATE -->
     <div class="section" id="step-4">
         <div class="card">
             <div class="card-header">
@@ -595,7 +587,6 @@ let videoDuration = 0;
 let webcams       = [];
 let selectedClips = [];
 let detectedClips = [];
-let pollInterval  = null;
 
 document.addEventListener('DOMContentLoaded', () => { checkHealth(); });
 
@@ -604,19 +595,9 @@ async function checkHealth() {
         const r = await fetch('/api/health');
         const d = await r.json();
         const el = document.getElementById('server-status');
-        const dot = document.getElementById('status-dot');
-        
-        if (d.ffmpeg_installed && d.yt_dlp_installed) {
-            el.textContent = `Sistem Hazır ✅ | FFmpeg: ${d.ffmpeg_version?.split(' ')[2] || '?'} | yt-dlp: ${d.yt_dlp_version || '?'}`;
-            if (dot) dot.style.background = 'var(--success)';
-        } else {
-            el.textContent = '⚠️ Bağımlılıklar eksik!';
-            if (dot) dot.style.background = 'var(--warning)';
-        }
-    } catch(e) {
+        el.textContent = (d.ffmpeg_installed && d.ytdlp_installed) ? 'Sistem Hazır ✅' : '⚠️ Bağımlılıklar eksik!';
+    } catch {
         document.getElementById('server-status').textContent = '❌ Bağlantı hatası';
-        const dot = document.getElementById('status-dot');
-        if (dot) dot.style.background = 'var(--error)';
     }
 }
 
@@ -634,10 +615,7 @@ function goToStep(step) {
     document.querySelectorAll('.step-item').forEach(s => s.classList.remove('active'));
     document.getElementById(`step-${step}`).classList.add('active');
     document.getElementById(`step-${step}-nav`).classList.add('active');
-    for (let i=1; i<step; i++) {
-        const nav = document.getElementById(`step-${i}-nav`);
-        if (nav) nav.classList.add('completed');
-    }
+    for (let i=1; i<step; i++) document.getElementById(`step-${i}-nav`).classList.add('completed');
 }
 
 async function downloadVideo() {
@@ -654,50 +632,31 @@ async function downloadVideo() {
     prog.style.display = 'block';
 
     try {
-        const res  = await fetch('/api/download', { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({url}) 
-        });
-        
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'İndirme başlatılamadı');
-        }
-        
+        const res  = await fetch('/api/download', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url}) });
         const data = await res.json();
         currentJob = data.job_id;
 
-        if (pollInterval) clearInterval(pollInterval);
-        
-        pollInterval = setInterval(async () => {
-            try {
-                const jr   = await fetch(`/api/job/${currentJob}`);
-                const job  = await jr.json();
-                
-                bar.style.width  = `${job.progress || 0}%`;
-                stat.textContent = job.message || 'İşleniyor...';
-                pct.textContent  = `${job.progress || 0}%`;
+        const poll = setInterval(async () => {
+            const jr   = await fetch(`/api/job/${currentJob}`);
+            const job  = await jr.json();
+            bar.style.width  = `${job.progress}%`;
+            stat.textContent = job.message;
+            pct.textContent  = `${job.progress}%`;
 
-                if (job.status === 'completed') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    videoPath     = job.video_path;
-                    videoDuration = job.duration || 60;
-                    btn.disabled  = false;
-                    showAlert(`Video indirildi! (${job.width || '?'}×${job.height || '?'})`, 'success');
-                    loadPreview();
-                    goToStep(2);
-                } else if (job.status === 'error') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    btn.disabled = false;
-                    showAlert('İndirme hatası: ' + (job.message || 'Bilinmeyen hata'));
-                }
-            } catch(e) {
-                console.error('Poll error:', e);
+            if (job.status === 'completed') {
+                clearInterval(poll);
+                videoPath     = job.video_path;
+                videoDuration = job.duration;
+                btn.disabled  = false;
+                showAlert(`Video indirildi! (${job.width}×${job.height})`, 'success');
+                loadPreview();
+                goToStep(2);
+            } else if (job.status === 'error') {
+                clearInterval(poll);
+                btn.disabled = false;
+                showAlert('İndirme hatası: ' + job.message);
             }
-        }, 1500);
+        }, 1000);
     } catch(e) {
         btn.disabled = false;
         showAlert('İndirme başarısız: ' + e.message);
@@ -708,17 +667,7 @@ async function loadPreview() {
     if (!videoPath) return;
     const ts = Math.min(600, videoDuration / 2);
     try {
-        const res  = await fetch('/api/preview', { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({video_path:videoPath, timestamp:ts}) 
-        });
-        
-        if (!res.ok) {
-            console.error('Preview error:', await res.text());
-            return;
-        }
-        
+        const res  = await fetch('/api/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({video_path:videoPath, timestamp:ts}) });
         const data = await res.json();
         const img  = document.getElementById('preview-image');
         img.src    = data.image;
@@ -730,8 +679,10 @@ async function loadPreview() {
 }
 
 function setupROICanvas() {
+    const c  = document.getElementById('roi-container');
+    const fresh = c.cloneNode(true);
+    c.parentNode.replaceChild(fresh, c);
     const container = document.getElementById('roi-container');
-    if (!container) return;
 
     let drawing = false, dragging = false, resizing = false;
     let dIdx = -1, rIdx = -1;
@@ -739,11 +690,9 @@ function setupROICanvas() {
 
     function pos(e) {
         const r = container.getBoundingClientRect();
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         return {
-            px: Math.max(0, Math.min(100, ((clientX - r.left) / r.width)  * 100)),
-            py: Math.max(0, Math.min(100, ((clientY - r.top)  / r.height) * 100))
+            px: Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width)  * 100)),
+            py: Math.max(0, Math.min(100, ((e.clientY - r.top)  / r.height) * 100))
         };
     }
 
@@ -771,7 +720,7 @@ function setupROICanvas() {
         return -1;
     }
 
-    function onMove(e) {
+    container.addEventListener('mousemove', e => {
         const {px, py} = pos(e);
         if (!drawing && !dragging && !resizing) {
             const chEl = document.getElementById('crosshair-h');
@@ -804,17 +753,17 @@ function setupROICanvas() {
             ghost.innerHTML = `<div class="roi-label">KAM ${webcams.length + 1}</div>`;
             overlay.appendChild(ghost);
         }
-    }
+    });
 
-    function onLeave() {
+    container.addEventListener('mouseleave', () => {
         const chEl = document.getElementById('crosshair-h');
         const cvEl = document.getElementById('crosshair-v');
         if (chEl) chEl.style.display = 'none';
         if (cvEl) cvEl.style.display = 'none';
-    }
+    });
 
-    function onDown(e) {
-        if (e.button !== 0 && !e.touches) return;
+    container.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
         e.preventDefault();
         const {px, py} = pos(e);
 
@@ -832,9 +781,9 @@ function setupROICanvas() {
         if (webcams.length < 4) {
             drawing = true; sx = px; sy = py;
         }
-    }
+    });
 
-    function onUp(e) {
+    container.addEventListener('mouseup', e => {
         if (drawing) {
             const {px, py} = pos(e);
             const w = Math.abs(px - sx);
@@ -847,16 +796,15 @@ function setupROICanvas() {
         dIdx = rIdx = -1;
         renderROIs();
         updateWebcamPreviews();
-    }
+    });
 
-    container.addEventListener('mousemove', onMove);
-    container.addEventListener('mouseleave', onLeave);
-    container.addEventListener('mousedown', onDown);
-    container.addEventListener('mouseup', onUp);
-
-    container.addEventListener('touchstart', e => { e.preventDefault(); onDown(e); }, {passive:false});
-    container.addEventListener('touchmove',  e => { e.preventDefault(); onMove(e); }, {passive:false});
-    container.addEventListener('touchend',   e => { e.preventDefault(); onUp(e); },   {passive:false});
+    const toMouse = (te, type) => {
+        const t = te.touches[0] || te.changedTouches[0];
+        container.dispatchEvent(new MouseEvent(type, { clientX:t.clientX, clientY:t.clientY, bubbles:true }));
+    };
+    container.addEventListener('touchstart', e => { e.preventDefault(); toMouse(e,'mousedown'); }, {passive:false});
+    container.addEventListener('touchmove',  e => { e.preventDefault(); toMouse(e,'mousemove'); }, {passive:false});
+    container.addEventListener('touchend',   e => { e.preventDefault(); toMouse(e,'mouseup'); },   {passive:false});
 }
 
 function renderROIs() {
@@ -878,24 +826,27 @@ function renderROIs() {
 
 function updateLayoutPreview() {
     const layoutWebcams = document.getElementById('layout-webcams');
-    const layoutGame = document.getElementById('layout-game');
-    const layoutDesc = document.getElementById('layout-desc');
-    const hintEl = document.getElementById('roi-hint');
+    const layoutGame    = document.getElementById('layout-game');
+    const layoutDesc    = document.getElementById('layout-desc');
+    const hintEl        = document.getElementById('roi-hint');
     if (!layoutWebcams) return;
 
-    const single = document.getElementById('layout-single-cam');
-    if (single) single.remove();
-
     if (webcams.length === 1) {
+        // Single cam: replace 2x2 grid with full-width webcam bar
         layoutWebcams.style.display = 'none';
-        const newSingle = document.createElement('div');
-        newSingle.id = 'layout-single-cam';
-        newSingle.className = 'layout-webcam-single';
-        layoutWebcams.parentNode.insertBefore(newSingle, layoutWebcams);
+        if (!document.getElementById('layout-single-cam')) {
+            const single = document.createElement('div');
+            single.id = 'layout-single-cam';
+            single.className = 'layout-webcam-single';
+            layoutWebcams.parentNode.insertBefore(single, layoutWebcams);
+        }
         if (layoutGame) { layoutGame.style.height = '72%'; layoutGame.style.flex = 'none'; }
         if (layoutDesc) layoutDesc.textContent = 'Üst: Webcam tam görünüm (1080×540) | Alt: Oyun alanı (1080×1380)';
         if (hintEl) hintEl.innerHTML = '✅ Tek kamera seçildi — Üstte tam webcam görünümü, altta geniş oyun alanı olacak.';
     } else {
+        // Multi cam: restore 2x2 grid
+        const single = document.getElementById('layout-single-cam');
+        if (single) single.remove();
         layoutWebcams.style.display = 'grid';
         if (layoutGame) { layoutGame.style.height = ''; layoutGame.style.flex = '1'; }
         if (layoutDesc) layoutDesc.textContent = webcams.length === 0
@@ -923,12 +874,12 @@ function deleteROI(idx) {
 
 function updateWebcamPreviews() {
     const img = document.getElementById('preview-image');
-    if (!img || !img.src || img.naturalWidth === 0) return;
-
     webcams.forEach((cam, i) => {
         const preview = document.getElementById(`cam-${i}`);
         if (!preview) return;
         preview.classList.add('active');
+
+        if (!img || !img.src || img.naturalWidth === 0) return;
 
         const PW = 270, PH = 480;
         const canvas = document.createElement('canvas');
@@ -955,7 +906,6 @@ function updateWebcamPreviews() {
         preview.innerHTML = `<div class="webcam-number">${i+1}</div>`;
         const ci = document.createElement('img');
         ci.src = canvas.toDataURL('image/jpeg', 0.85);
-        ci.alt = `Kamera ${i+1}`;
         ci.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
         preview.appendChild(ci);
     });
@@ -988,48 +938,29 @@ async function analyzeVideo() {
     cont.style.display = 'none';
 
     try {
-        const res  = await fetch('/api/analyze', { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({video_path:videoPath}) 
-        });
-        
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Analiz başlatılamadı');
-        }
-        
+        const res  = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({video_path:videoPath}) });
         const data = await res.json();
 
-        if (pollInterval) clearInterval(pollInterval);
-        
-        pollInterval = setInterval(async () => {
-            try {
-                const jr  = await fetch(`/api/job/${data.job_id}`);
-                const job = await jr.json();
-                
-                bar.style.width  = `${job.progress || 0}%`;
-                stat.textContent = job.message || 'Analiz ediliyor...';
-                pct.textContent  = `${job.progress || 0}%`;
+        const poll = setInterval(async () => {
+            const jr  = await fetch(`/api/job/${data.job_id}`);
+            const job = await jr.json();
+            bar.style.width  = `${job.progress}%`;
+            stat.textContent = job.message;
+            pct.textContent  = `${job.progress}%`;
 
-                if (job.status === 'completed') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    btn.disabled = false;
-                    detectedClips = job.clips || [];
-                    renderClips();
-                    cont.style.display = 'block';
-                    showAlert(`${detectedClips.length} viral an bulundu!`, 'success');
-                } else if (job.status === 'error') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    btn.disabled = false;
-                    showAlert('Analiz hatası: ' + (job.message || 'Bilinmeyen hata'));
-                }
-            } catch(e) {
-                console.error('Poll error:', e);
+            if (job.status === 'completed') {
+                clearInterval(poll);
+                btn.disabled = false;
+                detectedClips = job.clips;
+                renderClips();
+                cont.style.display = 'block';
+                showAlert(`${job.clips.length} viral an bulundu!`, 'success');
+            } else if (job.status === 'error') {
+                clearInterval(poll);
+                btn.disabled = false;
+                showAlert('Analiz hatası: ' + job.message);
             }
-        }, 1500);
+        }, 1000);
     } catch(e) {
         btn.disabled = false;
         showAlert('Analiz başarısız: ' + e.message);
@@ -1038,7 +969,6 @@ async function analyzeVideo() {
 
 function renderClips() {
     const grid = document.getElementById('clip-grid');
-    if (!grid) return;
     grid.innerHTML = '';
     detectedClips.forEach((clip, i) => {
         const card = document.createElement('div');
@@ -1047,7 +977,7 @@ function renderClips() {
         card.onclick = () => toggleClip(i);
         const scoreClass = clip.viral_score >= 85 ? 'high' : 'medium';
         const mins = Math.floor(clip.timestamp/60);
-        const secs = Math.floor(clip.timestamp%60).toString().padStart(2,'0');
+        const secs = (clip.timestamp%60).toString().padStart(2,'0');
         card.innerHTML = `
             <div class="clip-thumbnail">
                 <span style="font-size:3rem">${getClipEmoji(clip.type)}</span>
@@ -1067,14 +997,12 @@ function getClipEmoji(t) { return CLIP_EMOJIS[t] || '🎬'; }
 function toggleClip(i) {
     const card = document.querySelector(`.clip-card[data-index="${i}"]`);
     const clip = detectedClips[i];
-    if (!clip) return;
-    
     if (selectedClips.includes(clip)) {
         selectedClips = selectedClips.filter(c => c !== clip);
-        if (card) card.classList.remove('selected');
+        card.classList.remove('selected');
     } else {
         selectedClips.push(clip);
-        if (card) card.classList.add('selected');
+        card.classList.add('selected');
     }
 }
 
@@ -1103,42 +1031,27 @@ async function generateShorts() {
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ video_path:videoPath, clips:selectedClips, webcams })
         });
-        
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Üretim başlatılamadı');
-        }
-        
         const data = await res.json();
 
-        if (pollInterval) clearInterval(pollInterval);
-        
-        pollInterval = setInterval(async () => {
-            try {
-                const jr  = await fetch(`/api/job/${data.job_id}`);
-                const job = await jr.json();
-                
-                bar.style.width  = `${job.progress || 0}%`;
-                stat.textContent = job.message || 'İşleniyor...';
-                pct.textContent  = `${job.progress || 0}%`;
+        const poll = setInterval(async () => {
+            const jr  = await fetch(`/api/job/${data.job_id}`);
+            const job = await jr.json();
+            bar.style.width  = `${job.progress}%`;
+            stat.textContent = job.message;
+            pct.textContent  = `${job.progress}%`;
 
-                if (job.status === 'completed') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    btn.disabled = false;
-                    renderOutputs(job.outputs || []);
-                    out.style.display = 'block';
-                    showAlert(`${(job.outputs || []).length} shorts üretildi! ✅`, 'success');
-                } else if (job.status === 'error') {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                    btn.disabled = false;
-                    showAlert('Üretim hatası: ' + (job.message || 'Bilinmeyen hata'));
-                }
-            } catch(e) {
-                console.error('Poll error:', e);
+            if (job.status === 'completed') {
+                clearInterval(poll);
+                btn.disabled = false;
+                renderOutputs(job.outputs);
+                out.style.display = 'block';
+                showAlert(`${job.outputs.length} shorts üretildi! ✅`, 'success');
+            } else if (job.status === 'error') {
+                clearInterval(poll);
+                btn.disabled = false;
+                showAlert('Üretim hatası: ' + job.message);
             }
-        }, 1500);
+        }, 1000);
     } catch(e) {
         btn.disabled = false;
         showAlert('Üretim başarısız: ' + e.message);
@@ -1147,16 +1060,14 @@ async function generateShorts() {
 
 function renderOutputs(outputs) {
     const grid = document.getElementById('output-grid');
-    if (!grid) return;
     grid.innerHTML = '';
     outputs.forEach((output, i) => {
         const card = document.createElement('div');
         card.className = 'output-card';
         card.innerHTML = `
             <div class="output-video">
-                <video controls preload="metadata">
+                <video controls>
                     <source src="${output.url}" type="video/mp4">
-                    Tarayıcınız video oynatmayı desteklemiyor.
                 </video>
             </div>
             <div class="output-info">
