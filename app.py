@@ -37,7 +37,7 @@ jobs = {}
 def cleanup_old_files():
     """1 saatten eski dosyaları otomatik sil"""
     now = time.time()
-    max_age = 3600  # 1 saat = 3600 saniye
+    max_age = 3600
 
     for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, TEMP_FOLDER]:
         if not folder.exists():
@@ -54,7 +54,7 @@ def cleanup_old_files():
 
 def start_cleanup_scheduler():
     while True:
-        time.sleep(600)  # 10 dakika
+        time.sleep(600)
         cleanup_old_files()
 
 threading.Thread(target=start_cleanup_scheduler, daemon=True).start()
@@ -97,33 +97,12 @@ def health():
         "ffmpeg_installed": ffmpeg_ok,
         "ffmpeg_version": ffmpeg_version,
         "yt_dlp_installed": ytdlp_ok,
-        "yt_dlp_version": ytdlp_version,
-        "upload_folder": str(UPLOAD_FOLDER),
-        "output_folder": str(OUTPUT_FOLDER),
-        "temp_folder": str(TEMP_FOLDER)
+        "yt_dlp_version": ytdlp_version
     })
 
 
 # -------------------------
-# YT-DLP GÜNCELLEME (Her deploy'da)
-# -------------------------
-def update_ytdlp():
-    """yt-dlp'yi en güncel nightly build'e güncelle"""
-    try:
-        subprocess.run([
-            "pip", "install", "--upgrade", "--no-cache-dir",
-            "yt-dlp[default]"
-        ], capture_output=True, timeout=60)
-        print("[YT-DLP] Güncellendi")
-    except Exception as e:
-        print(f"[YT-DLP] Güncelleme hatası: {e}")
-
-# Başlangıçta güncelle
-threading.Thread(target=update_ytdlp, daemon=True).start()
-
-
-# -------------------------
-# DOWNLOAD VIDEO (YouTube 403 FIX)
+# DOWNLOAD VIDEO (HD KALİTE + HOLLANDA)
 # -------------------------
 @app.route('/api/download', methods=['POST'])
 def download_video():
@@ -145,61 +124,64 @@ def download_video():
 
     def task():
         try:
-            # Önce yt-dlp'yi güncelle
-            update_result = subprocess.run(
+            # yt-dlp'yi güncelle
+            subprocess.run(
                 ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
                 capture_output=True, text=True, timeout=60
             )
-            print(f"[YT-DLP UPDATE] {update_result.stdout[:200]}")
 
-            # YouTube 403 FIX: birden fazla strateji dene
+            # HD KALİTE: bestvideo+bestaudio veya en yüksek kalite
+            # HOLLANDA: --geo-bypass-country NL
             strategies = [
-                # Strateji 1: Android client + best format
                 {
                     "cmd": [
                         "yt-dlp",
                         "--no-playlist",
                         "--extractor-args", "youtube:player_client=android",
-                        "-f", "best[ext=mp4]/best",
+                        # HD KALİTE: video+audio merge et, en yüksek kalite
+                        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best",
                         "--merge-output-format", "mp4",
                         "--no-check-certificates",
                         "--geo-bypass",
-                        "--user-agent", "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36",
+                        "--geo-bypass-country", "NL",  # HOLLANDA
+                        "--user-agent", "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+                        "--add-header", "Accept-Language:nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+                        # Kalite ayarları
+                        "--no-warnings",
+                        "--no-call-home",
                         "-o", str(out_file),
                         url
                     ],
-                    "name": "Android client"
+                    "name": "Android HD (NL)"
                 },
-                # Strateji 2: iOS client
                 {
                     "cmd": [
                         "yt-dlp",
                         "--no-playlist",
                         "--extractor-args", "youtube:player_client=ios",
-                        "-f", "best[ext=mp4]/best",
+                        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
                         "--merge-output-format", "mp4",
                         "--no-check-certificates",
                         "--geo-bypass",
+                        "--geo-bypass-country", "NL",
                         "-o", str(out_file),
                         url
                     ],
-                    "name": "iOS client"
+                    "name": "iOS HD (NL)"
                 },
-                # Strateji 3: Web client + cookies simulation
                 {
                     "cmd": [
                         "yt-dlp",
                         "--no-playlist",
-                        "--extractor-args", "youtube:player_client=web",
-                        "-f", "18/best[ext=mp4]/best",
+                        "-f", "best[ext=mp4]/best",
                         "--merge-output-format", "mp4",
                         "--no-check-certificates",
                         "--geo-bypass",
-                        "--add-header", "Accept-Language:en-US,en;q=0.9",
+                        "--geo-bypass-country", "NL",
                         "-o", str(out_file),
                         url
                     ],
-                    "name": "Web client (fallback)"
+                    "name": "Fallback (NL)"
                 }
             ]
 
@@ -224,18 +206,19 @@ def download_video():
                 for line in p.stdout:
                     output_lines.append(line)
                     jobs[job_id]["progress"] = min(jobs[job_id]["progress"] + 5, 90)
-                    if "Downloading" in line:
+                    if "Downloading" in line or "download" in line.lower():
                         jobs[job_id]["message"] = f"{strategy['name']}: İndiriliyor..."
 
                 p.wait()
 
-                if p.returncode == 0 and out_file.exists() and out_file.stat().st_size > 1000:
+                if p.returncode == 0 and out_file.exists() and out_file.stat().st_size > 10000:
                     success = True
                     print(f"[DOWNLOAD] {strategy['name']} BAŞARILI!")
                     break
                 else:
                     last_error = f"{strategy['name']} başarısız (exit: {p.returncode})"
                     print(f"[DOWNLOAD] {last_error}")
+                    print(f"[DOWNLOAD] Output: {''.join(output_lines[-10:])}")
                     if out_file.exists():
                         out_file.unlink()
 
@@ -246,7 +229,7 @@ def download_video():
             ffprobe_cmd = [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,duration",
+                "-show_entries", "stream=width,height,duration,bit_rate",
                 "-of", "json",
                 str(out_file)
             ]
@@ -258,15 +241,24 @@ def download_video():
             duration = float(stream.get("duration", 60))
             width = stream.get("width", 1920)
             height = stream.get("height", 1080)
+            bitrate = stream.get("bit_rate", "?")
+
+            # Bitrate'i okunabilir yap
+            if bitrate != "?":
+                bitrate_mb = round(int(bitrate) / 1000000, 2)
+                bitrate_str = f"{bitrate_mb} Mbps"
+            else:
+                bitrate_str = "?"
 
             jobs[job_id] = {
                 "status": "completed",
                 "progress": 100,
-                "message": "İndirme tamamlandı",
+                "message": f"İndirme tamamlandı — {height}p {bitrate_str}",
                 "video_path": str(out_file),
                 "duration": duration,
                 "width": width,
-                "height": height
+                "height": height,
+                "bitrate": bitrate_str
             }
 
         except Exception as e:
@@ -398,7 +390,7 @@ def analyze():
 
 
 # -------------------------
-# GENERATE SHORTS (FFMPEG CORE)
+# GENERATE SHORTS
 # -------------------------
 @app.route('/api/generate', methods=['POST'])
 def generate():
@@ -439,7 +431,7 @@ def generate():
                     "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "23",
+                    "-crf", "18",  # Daha iyi kalite (düşük CRF = daha iyi)
                     "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
                     str(out_path)
@@ -490,7 +482,7 @@ def download(file):
 
 
 # -------------------------
-# MANUAL CLEANUP ENDPOINT
+# MANUAL CLEANUP
 # -------------------------
 @app.route('/api/cleanup', methods=['POST'])
 def manual_cleanup():
