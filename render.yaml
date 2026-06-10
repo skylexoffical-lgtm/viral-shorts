@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: viral-shorts
+    runtime: docker
+    plan: standard  # 2GB RAM (SIGKILL çözümü için)
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PORT
+        value: "8000"
+    healthCheckPath: /api/health
+    autoDeploy: true
