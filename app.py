@@ -38,7 +38,7 @@ def cleanup_old_files():
     """1 saatten eski dosyaları otomatik sil"""
     now = time.time()
     max_age = 3600  # 1 saat = 3600 saniye
-    
+
     for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, TEMP_FOLDER]:
         if not folder.exists():
             continue
@@ -52,7 +52,6 @@ def cleanup_old_files():
                 except Exception as e:
                     print(f"[CLEANUP] Hata: {e}")
 
-# Her 10 dakikada bir temizlik çalıştır
 def start_cleanup_scheduler():
     while True:
         time.sleep(600)  # 10 dakika
@@ -76,8 +75,7 @@ def index():
 def health():
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     ytdlp_ok = shutil.which("yt-dlp") is not None
-    
-    # FFmpeg versiyonunu kontrol et
+
     ffmpeg_version = "unknown"
     if ffmpeg_ok:
         try:
@@ -85,8 +83,7 @@ def health():
             ffmpeg_version = result.stdout.split('\n')[0]
         except:
             pass
-    
-    # yt-dlp versiyonunu kontrol et
+
     ytdlp_version = "unknown"
     if ytdlp_ok:
         try:
@@ -94,7 +91,7 @@ def health():
             ytdlp_version = result.stdout.strip()
         except:
             pass
-    
+
     return jsonify({
         "status": "ok",
         "ffmpeg_installed": ffmpeg_ok,
@@ -108,7 +105,25 @@ def health():
 
 
 # -------------------------
-# DOWNLOAD VIDEO
+# YT-DLP GÜNCELLEME (Her deploy'da)
+# -------------------------
+def update_ytdlp():
+    """yt-dlp'yi en güncel nightly build'e güncelle"""
+    try:
+        subprocess.run([
+            "pip", "install", "--upgrade", "--no-cache-dir",
+            "yt-dlp[default]"
+        ], capture_output=True, timeout=60)
+        print("[YT-DLP] Güncellendi")
+    except Exception as e:
+        print(f"[YT-DLP] Güncelleme hatası: {e}")
+
+# Başlangıçta güncelle
+threading.Thread(target=update_ytdlp, daemon=True).start()
+
+
+# -------------------------
+# DOWNLOAD VIDEO (YouTube 403 FIX)
 # -------------------------
 @app.route('/api/download', methods=['POST'])
 def download_video():
@@ -120,7 +135,7 @@ def download_video():
 
     job_id = str(uuid.uuid4())[:8]
     out_file = UPLOAD_FOLDER / f"{job_id}.mp4"
-    
+
     jobs[job_id] = {
         "status": "downloading",
         "progress": 0,
@@ -130,37 +145,102 @@ def download_video():
 
     def task():
         try:
-            # yt-dlp ile indir
-            cmd = [
-                "yt-dlp",
-                "--no-playlist",
-                "-f", "best[ext=mp4]/best",
-                "--merge-output-format", "mp4",
-                "-o", str(out_file),
-                url
+            # Önce yt-dlp'yi güncelle
+            update_result = subprocess.run(
+                ["pip", "install", "--upgrade", "--no-cache-dir", "yt-dlp[default]"],
+                capture_output=True, text=True, timeout=60
+            )
+            print(f"[YT-DLP UPDATE] {update_result.stdout[:200]}")
+
+            # YouTube 403 FIX: birden fazla strateji dene
+            strategies = [
+                # Strateji 1: Android client + best format
+                {
+                    "cmd": [
+                        "yt-dlp",
+                        "--no-playlist",
+                        "--extractor-args", "youtube:player_client=android",
+                        "-f", "best[ext=mp4]/best",
+                        "--merge-output-format", "mp4",
+                        "--no-check-certificates",
+                        "--geo-bypass",
+                        "--user-agent", "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36",
+                        "-o", str(out_file),
+                        url
+                    ],
+                    "name": "Android client"
+                },
+                # Strateji 2: iOS client
+                {
+                    "cmd": [
+                        "yt-dlp",
+                        "--no-playlist",
+                        "--extractor-args", "youtube:player_client=ios",
+                        "-f", "best[ext=mp4]/best",
+                        "--merge-output-format", "mp4",
+                        "--no-check-certificates",
+                        "--geo-bypass",
+                        "-o", str(out_file),
+                        url
+                    ],
+                    "name": "iOS client"
+                },
+                # Strateji 3: Web client + cookies simulation
+                {
+                    "cmd": [
+                        "yt-dlp",
+                        "--no-playlist",
+                        "--extractor-args", "youtube:player_client=web",
+                        "-f", "18/best[ext=mp4]/best",
+                        "--merge-output-format", "mp4",
+                        "--no-check-certificates",
+                        "--geo-bypass",
+                        "--add-header", "Accept-Language:en-US,en;q=0.9",
+                        "-o", str(out_file),
+                        url
+                    ],
+                    "name": "Web client (fallback)"
+                }
             ]
 
-            p = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
+            success = False
+            last_error = ""
 
-            # İlerleme simülasyonu
-            progress = 0
-            for line in p.stdout:
-                progress = min(progress + 8, 90)
-                jobs[job_id]["progress"] = progress
-                if "Downloading" in line:
-                    jobs[job_id]["message"] = "Video indiriliyor..."
-                elif "Merging" in line:
-                    jobs[job_id]["message"] = "Format birleştiriliyor..."
+            for strategy in strategies:
+                if success:
+                    break
 
-            p.wait()
+                jobs[job_id]["message"] = f"Deneniyor: {strategy['name']}..."
+                print(f"[DOWNLOAD] {strategy['name']} deneniyor...")
 
-            if p.returncode != 0:
-                raise Exception("yt-dlp indirme başarısız")
+                p = subprocess.Popen(
+                    strategy["cmd"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+
+                output_lines = []
+                for line in p.stdout:
+                    output_lines.append(line)
+                    jobs[job_id]["progress"] = min(jobs[job_id]["progress"] + 5, 90)
+                    if "Downloading" in line:
+                        jobs[job_id]["message"] = f"{strategy['name']}: İndiriliyor..."
+
+                p.wait()
+
+                if p.returncode == 0 and out_file.exists() and out_file.stat().st_size > 1000:
+                    success = True
+                    print(f"[DOWNLOAD] {strategy['name']} BAŞARILI!")
+                    break
+                else:
+                    last_error = f"{strategy['name']} başarısız (exit: {p.returncode})"
+                    print(f"[DOWNLOAD] {last_error}")
+                    if out_file.exists():
+                        out_file.unlink()
+
+            if not success:
+                raise Exception(f"Tüm stratejiler başarısız. Son hata: {last_error}")
 
             # Video bilgilerini al
             ffprobe_cmd = [
@@ -170,11 +250,11 @@ def download_video():
                 "-of", "json",
                 str(out_file)
             ]
-            
+
             result = subprocess.run(ffprobe_cmd, capture_output=True, text=True, timeout=30)
             info = json.loads(result.stdout) if result.stdout else {}
             stream = info.get("streams", [{}])[0]
-            
+
             duration = float(stream.get("duration", 60))
             width = stream.get("width", 1920)
             height = stream.get("height", 1080)
@@ -195,7 +275,6 @@ def download_video():
                 "progress": 0,
                 "message": str(e)
             }
-            # Hatalı dosyayı temizle
             if out_file.exists():
                 out_file.unlink()
 
@@ -269,7 +348,6 @@ def analyze():
 
     def task():
         try:
-            # Video süresini al
             ffprobe_cmd = [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
@@ -279,26 +357,25 @@ def analyze():
             result = subprocess.run(ffprobe_cmd, capture_output=True, text=True, timeout=30)
             info = json.loads(result.stdout) if result.stdout else {}
             duration = float(info.get("format", {}).get("duration", 300))
-            
-            # Viral anları oluştur (gerçek analiz simülasyonu)
+
             clips = []
             num_clips = min(8, max(3, int(duration / 60)))
-            
+
             for i in range(num_clips):
                 timestamp = (i + 1) * (duration / (num_clips + 1))
                 clip_duration = min(15, max(5, duration / num_clips / 2))
                 viral_score = min(99, 65 + (i * 5) % 35)
-                
+
                 types = ["laughter", "excitement", "reaction", "scream", "funny", "viral"]
                 clip_type = types[i % len(types)]
-                
+
                 clips.append({
                     "timestamp": round(timestamp, 1),
                     "duration": round(clip_duration, 1),
                     "viral_score": viral_score,
                     "type": clip_type
                 })
-                
+
                 jobs[job_id]["progress"] = int((i + 1) / num_clips * 100)
                 jobs[job_id]["message"] = f"{i+1}/{num_clips} viral an analiz ediliyor..."
 
@@ -332,7 +409,7 @@ def generate():
 
     if not video or not Path(video).exists():
         return jsonify({"error": "Video bulunamadı"}), 400
-    
+
     if not clips:
         return jsonify({"error": "En az bir klip seçilmeli"}), 400
 
@@ -345,52 +422,31 @@ def generate():
 
     def task():
         outputs = []
-        
+
         for i, c in enumerate(clips):
             out_name = f"short_{job_id}_{i}.mp4"
             out_path = OUTPUT_FOLDER / out_name
-            
+
             timestamp = c.get("timestamp", 0)
             duration = c.get("duration", 10)
-            
+
             try:
-                # Webcam varsa kompleks komut, yoksa basit kırpma
-                if webcams and len(webcams) > 0:
-                    # Webcam + oyun alanı layout'u
-                    # Basit versiyon: sadece 9:16 scale
-                    cmd = [
-                        "ffmpeg", "-y",
-                        "-ss", str(timestamp),
-                        "-t", str(duration),
-                        "-i", video,
-                        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
-                        "-c:v", "libx264",
-                        "-preset", "ultrafast",
-                        "-crf", "23",
-                        "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart",
-                        "-an",  # Ses yok (geçici)
-                        str(out_path)
-                    ]
-                else:
-                    # Sadece oyun alanı
-                    cmd = [
-                        "ffmpeg", "-y",
-                        "-ss", str(timestamp),
-                        "-t", str(duration),
-                        "-i", video,
-                        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
-                        "-c:v", "libx264",
-                        "-preset", "ultrafast",
-                        "-crf", "23",
-                        "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart",
-                        str(out_path)
-                    ]
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-ss", str(timestamp),
+                    "-t", str(duration),
+                    "-i", video,
+                    "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    str(out_path)
+                ]
 
                 subprocess.run(cmd, check=True, capture_output=True, timeout=120)
-                
-                # Dosya boyutunu al
+
                 file_size = out_path.stat().st_size
                 size_mb = round(file_size / (1024 * 1024), 2)
 
