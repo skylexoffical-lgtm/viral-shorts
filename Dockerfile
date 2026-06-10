@@ -1,14 +1,13 @@
 FROM python:3.11-slim
 
-# Sistem bağımlılıkları
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp kurulumu (en güncel sürüm)
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+# yt-dlp PIP ile kur (her deploy'da güncel)
+RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
 
@@ -19,5 +18,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-# Railway PORT ortam değişkenini kullan
 CMD gunicorn app:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 4 --timeout 300
